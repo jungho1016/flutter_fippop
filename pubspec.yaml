@@ -33,6 +33,19 @@ dependencies:
   camera: ^0.10.5+9
   google_mlkit_pose_detection: ^0.9.0
   image: ^4.0.15
+  flutter_tts: ^3.8.3
+  vibration: ^1.8.1
+  shared_preferences: ^2.2.2
+  intl: ^0.18.1
+  fl_chart: ^0.65.0
+  path_provider: ^2.1.1
+  sqflite: ^2.3.0
+  flutter_local_notifications: ^15.1.1
+  share_plus: ^7.2.1
+  google_fonts: ^6.1.0
+  flutter_svg: ^2.0.9
+  cached_network_image: ^3.3.0
+  shimmer: ^3.0.0
 
 
   # The following adds the Cupertino Icons font to your application.
@@ -49,6 +62,8 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^2.0.0
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.3.5
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -91,3 +106,18 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/custom-fonts/#from-packages
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/app_icon.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+
+flutter_native_splash:
+  color: "#42a5f5"
+  image: assets/splash_icon.png
+  android_12:
+    image: assets/splash_icon.png
+    icon_background_color: "#42a5f5"
+  web: false
