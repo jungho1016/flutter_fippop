@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
@@ -143,6 +145,16 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
   // 현재 스쿼트 단계를 저장할 변수 추가
   SquatPhase currentPhase = SquatPhase.standing;
   int squatCount = 0;
+  bool _processingImage = false; // 이미지 처리 중복 방지를 위한 플래그 추가
+
+  // 포즈 스무딩을 위한 변수들
+  final List<Map<PoseLandmarkType, PoseLandmark>> _poseHistory = [];
+  static const int _historyLength = 5; // 스무딩에 사용할 프레임 수
+
+  // 자세 분석을 위한 변수들
+  double _lastKneeAngle = 0.0;
+  DateTime _lastPhaseChange = DateTime.now();
+  static const Duration _minPhaseDuration = Duration(milliseconds: 500);
 
   @override
   void initState() {
@@ -158,25 +170,31 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
     }
 
     try {
+      // 후면 카메라로 시작
+      final backCamera = widget.cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => widget.cameras.first,
+      );
+
       cameraController = CameraController(
-        widget.cameras[0],
-        ResolutionPreset.medium,
+        backCamera,
+        ResolutionPreset.low, // 해상도를 낮춤
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.bgra8888,
+        imageFormatGroup: Platform.isAndroid
+            ? ImageFormatGroup.yuv420
+            : ImageFormatGroup.bgra8888,
       );
 
       await cameraController!.initialize();
-
       if (!mounted) return;
 
       setState(() {});
 
-      // 카메라가 초기화된 후 약간의 지연을 주고 포즈 감지 시작
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) {
-          detectPose();
-        }
-      });
+      // 포즈 감지 시작 전 지연
+      await Future.delayed(const Duration(seconds: 2));
+      if (mounted) {
+        detectPose();
+      }
     } catch (e) {
       print('카메라 초기화 오류: $e');
     }
@@ -185,40 +203,58 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
   void _initializePoseDetector() {
     final options = PoseDetectorOptions(
       mode: PoseDetectionMode.stream,
-      model: PoseDetectionModel.accurate,
+      model: PoseDetectionModel.base, // accurate에서 base로 변경하여 속도 향상
     );
     _poseDetector = PoseDetector(options: options);
   }
 
   Future<void> _processImage(CameraImage image) async {
+    if (_processingImage) return;
+    _processingImage = true;
+
     try {
-      // 이미지 처리 중에 카메라가 해제되었는지 확인
       if (!mounted || cameraController == null) return;
 
-      final inputImage = InputImage.fromBytes(
-        bytes: image.planes[0].bytes,
-        metadata: InputImageMetadata(
-          size: Size(image.width.toDouble(), image.height.toDouble()),
-          rotation: InputImageRotation.rotation90deg,
-          format: InputImageFormat.bgra8888,
-          bytesPerRow: image.planes[0].bytesPerRow,
-        ),
-      );
+      // Android용 이미지 처리 로직
+      if (Platform.isAndroid) {
+        final bytes = image.planes[0].bytes;
 
-      if (_poseDetector == null) return;
+        final inputImage = InputImage.fromBytes(
+          bytes: bytes,
+          metadata: InputImageMetadata(
+            size: Size(image.width.toDouble(), image.height.toDouble()),
+            rotation: InputImageRotation.rotation90deg,
+            format: InputImageFormat.yuv420,
+            bytesPerRow: image.planes[0].bytesPerRow,
+          ),
+        );
 
-      final poses = await _poseDetector?.processImage(inputImage);
+        if (_poseDetector != null) {
+          final poses = await _poseDetector!.processImage(inputImage);
+          if (poses.isNotEmpty && mounted) {
+            setState(() {
+              currentPose = poses.first.landmarks;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print('포즈 감지 오류: $e');
+    } finally {
+      _processingImage = false;
+    }
+  }
 
-      // 상태 업데이트 전에 위젯이 여전히 마운트되어 있는지 확인
-      if (!mounted) return;
+  // 포즈 결과 처리를 위한 새로운 메서드
+  void _processPoseResults(List<Pose>? poses) {
+    if (!mounted) return;
 
-      if (poses != null && poses.isNotEmpty) {
-        final pose = poses.first;
+    if (poses != null && poses.isNotEmpty) {
+      final pose = poses.first;
+      if (_checkPoseReliability(pose)) {
         setState(() {
           currentPose = pose.landmarks;
           final newPhase = _analyzePose(pose);
-
-          // 스쿼트 카운트 업데이트 로직 추가
           if (currentPhase == SquatPhase.bottom &&
               newPhase == SquatPhase.ascending) {
             squatCount++;
@@ -226,33 +262,80 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
           currentPhase = newPhase;
         });
       }
-    } catch (e) {
-      print('포즈 감지 오류: $e');
     }
   }
 
   SquatPhase _analyzePose(Pose pose) {
-    final leftHip = pose.landmarks[PoseLandmarkType.leftHip];
-    final leftKnee = pose.landmarks[PoseLandmarkType.leftKnee];
-    final leftAnkle = pose.landmarks[PoseLandmarkType.leftAnkle];
+    final smoothedPose = _smoothPose(pose.landmarks);
+    if (smoothedPose == null) return SquatPhase.invalid;
 
-    if (leftHip == null || leftKnee == null || leftAnkle == null) {
-      return SquatPhase.invalid;
+    double? kneeAngle = _calculateKneeAngle(smoothedPose);
+    if (kneeAngle == null) return SquatPhase.invalid;
+
+    // 급격한 변화 방지
+    if ((_lastKneeAngle - kneeAngle).abs() > 30) {
+      return currentPhase; // 현재 상태 유지
+    }
+    _lastKneeAngle = kneeAngle;
+
+    // 최소 지속 시간 체크
+    if (DateTime.now().difference(_lastPhaseChange) < _minPhaseDuration) {
+      return currentPhase; // 현재 상태 유지
     }
 
-    double kneeAngle = SquatAnalyzer.computeAngle(
-      [leftHip.x, leftHip.y],
-      [leftKnee.x, leftKnee.y],
-      [leftAnkle.x, leftAnkle.y],
-    );
-
-    if (kneeAngle > 150) {
-      return SquatPhase.standing;
-    } else if (kneeAngle > 90) {
-      return SquatPhase.descending;
+    SquatPhase newPhase;
+    if (kneeAngle > 140) {
+      newPhase = SquatPhase.standing;
+    } else if (kneeAngle > 80) {
+      newPhase = kneeAngle < _lastKneeAngle
+          ? SquatPhase.descending
+          : SquatPhase.ascending;
     } else {
-      return SquatPhase.bottom;
+      newPhase = SquatPhase.bottom;
     }
+
+    if (newPhase != currentPhase) {
+      _lastPhaseChange = DateTime.now();
+    }
+
+    return newPhase;
+  }
+
+  double? _calculateKneeAngle(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+    final leftHip = landmarks[PoseLandmarkType.leftHip];
+    final leftKnee = landmarks[PoseLandmarkType.leftKnee];
+    final leftAnkle = landmarks[PoseLandmarkType.leftAnkle];
+    final rightHip = landmarks[PoseLandmarkType.rightHip];
+    final rightKnee = landmarks[PoseLandmarkType.rightKnee];
+    final rightAnkle = landmarks[PoseLandmarkType.rightAnkle];
+
+    double? leftAngle, rightAngle;
+
+    if (leftHip != null && leftKnee != null && leftAnkle != null) {
+      leftAngle = SquatAnalyzer.computeAngle(
+        [leftHip.x, leftHip.y],
+        [leftKnee.x, leftKnee.y],
+        [leftAnkle.x, leftAnkle.y],
+      );
+    }
+
+    if (rightHip != null && rightKnee != null && rightAnkle != null) {
+      rightAngle = SquatAnalyzer.computeAngle(
+        [rightHip.x, rightHip.y],
+        [rightKnee.x, rightKnee.y],
+        [rightAnkle.x, rightAnkle.y],
+      );
+    }
+
+    if (leftAngle != null && rightAngle != null) {
+      return (leftAngle + rightAngle) / 2;
+    } else if (leftAngle != null) {
+      return leftAngle;
+    } else if (rightAngle != null) {
+      return rightAngle;
+    }
+
+    return null;
   }
 
   void detectPose() async {
@@ -262,6 +345,7 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
       try {
         await cameraController?.startImageStream((CameraImage image) async {
           if (isDetecting && mounted) {
+            await Future.delayed(const Duration(milliseconds: 500)); // 처리 간격 증가
             await _processImage(image);
           }
         });
@@ -274,9 +358,10 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
 
   @override
   void dispose() {
-    isDetecting = false; // 이미지 처리 중지
-    _poseDetector?.close(); // ML Kit 리소스 해제
-    cameraController?.dispose(); // 카메라 리소스 해제
+    isDetecting = false;
+    _processingImage = false;
+    cameraController?.dispose();
+    _poseDetector?.close();
     super.dispose();
   }
 
@@ -304,9 +389,11 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
         actions: [
           IconButton(
             icon: const Icon(Icons.flip_camera_android),
-            onPressed: () {
-              // 카메라 전환 기능 추가 예정
-            },
+            onPressed: _switchCamera,
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _resetCounter,
           ),
         ],
       ),
@@ -399,6 +486,24 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
               ),
             ),
           ),
+
+          // 자세 가이드라인 오버레이 추가
+          if (currentPhase == SquatPhase.standing)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: GuidelinePainter(),
+              ),
+            ),
+
+          // 하단 버튼 추가
+          Positioned(
+            bottom: 100,
+            right: 20,
+            child: FloatingActionButton(
+              onPressed: _resetCounter,
+              child: const Icon(Icons.refresh),
+            ),
+          ),
         ],
       ),
     );
@@ -473,10 +578,119 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
       case SquatPhase.bottom:
         return '좋습니다! 이 자세를 잠시 유지하세요';
       case SquatPhase.ascending:
-        return '천천히 일어나세요';
+        return '천히 일어나세요';
       case SquatPhase.invalid:
-        return '카메라 앞에서 전신이 보이도록 서주세요';
+        return '카메라 앞에서 전신이 보이도 서주세요';
     }
+  }
+
+  // 카메라 전환 메서드
+  Future<void> _switchCamera() async {
+    if (widget.cameras.length < 2) return;
+
+    final lensDirection = cameraController?.description.lensDirection;
+    CameraDescription newCamera;
+
+    if (lensDirection == CameraLensDirection.front) {
+      newCamera = widget.cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+      );
+    } else {
+      newCamera = widget.cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+      );
+    }
+
+    await cameraController?.dispose();
+
+    cameraController = CameraController(
+      newCamera,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.bgra8888,
+    );
+
+    try {
+      await cameraController!.initialize();
+      if (mounted) {
+        setState(() {});
+        detectPose();
+      }
+    } catch (e) {
+      print('카메라 전환 오류: $e');
+    }
+  }
+
+  // 스쿼트 카운터 리셋
+  void _resetCounter() {
+    setState(() {
+      squatCount = 0;
+    });
+  }
+
+  // 포즈 신뢰도 체크 메서드 수정
+  bool _checkPoseReliability(Pose pose) {
+    // 필수 관절 포인트들
+    final requiredLandmarks = [
+      PoseLandmarkType.leftHip,
+      PoseLandmarkType.rightHip,
+      PoseLandmarkType.leftKnee,
+      PoseLandmarkType.rightKnee,
+    ];
+
+    // 신뢰도 임계값을 매우 낮춤
+    const minConfidence = 0.1; // 0.3에서 0.1로 변경
+
+    // 최소 2개 이상의 포인트만 있어도 인정
+    int validPoints = 0;
+    for (var type in requiredLandmarks) {
+      final landmark = pose.landmarks[type];
+      if (landmark != null && landmark.likelihood >= minConfidence) {
+        validPoints++;
+      }
+    }
+
+    return validPoints >= 2; // 4개에서 2개로 변경
+  }
+
+  // 포즈 스무딩 메서드 추가
+  Map<PoseLandmarkType, PoseLandmark>? _smoothPose(
+      Map<PoseLandmarkType, PoseLandmark> newPose) {
+    _poseHistory.add(newPose);
+    if (_poseHistory.length > _historyLength) {
+      _poseHistory.removeAt(0);
+    }
+
+    if (_poseHistory.length < 3) return newPose;
+
+    final smoothedPose = <PoseLandmarkType, PoseLandmark>{};
+
+    for (var type in PoseLandmarkType.values) {
+      double sumX = 0, sumY = 0, sumZ = 0, sumLikelihood = 0;
+      int count = 0;
+
+      for (var pose in _poseHistory) {
+        if (pose[type] != null) {
+          sumX += pose[type]!.x;
+          sumY += pose[type]!.y;
+          sumZ += pose[type]!.z;
+          sumLikelihood += pose[type]!.likelihood;
+          count++;
+        }
+      }
+
+      if (count > 0) {
+        smoothedPose[type] = PoseLandmark(
+          type: type,
+          x: sumX / count,
+          y: sumY / count,
+          z: sumZ / count,
+          likelihood: sumLikelihood / count,
+        );
+      }
+    }
+
+    return smoothedPose;
   }
 }
 
@@ -495,40 +709,54 @@ class PoseOverlayPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4.0;
 
-    // 키포인트 그리기
-    landmarks!.forEach((type, landmark) {
-      final confidence = _getLikelihoodFromInference(landmark.likelihood);
-      paint.color = _getConfidenceColor(confidence);
-      canvas.drawCircle(
-        Offset(landmark.x * size.width, landmark.y * size.height),
-        8,
-        paint,
-      );
-    });
-
-    // 관절 연결선 그리기
+    // 관절 연결선 먼저 그리기
     _drawSkeleton(canvas, size, paint);
-  }
 
-  // 추가: ML Kit의 confidence 값을 Likelihood enum으로 변환
-  Likelihood _getLikelihoodFromInference(double confidence) {
-    if (confidence > 0.8) return Likelihood.high;
-    if (confidence > 0.5) return Likelihood.medium;
-    return Likelihood.low;
+    // 키포인트 그리기 (연결선 위에 그려지도록)
+    landmarks!.forEach((type, landmark) {
+      paint
+        ..color = Colors.blue
+        ..style = PaintingStyle.fill;
+
+      // 화면 크기에 맞게 좌표 변환
+      final position = Offset(
+        landmark.x * size.width,
+        landmark.y * size.height,
+      );
+
+      // 키포인트 그리기
+      canvas.drawCircle(position, 6.0, paint);
+
+      // 키포인트 테두리 그리기
+      paint
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0;
+      canvas.drawCircle(position, 6.0, paint);
+    });
   }
 
   void _drawSkeleton(Canvas canvas, Size size, Paint paint) {
     final connections = [
+      // 다리
       [PoseLandmarkType.leftHip, PoseLandmarkType.leftKnee],
       [PoseLandmarkType.leftKnee, PoseLandmarkType.leftAnkle],
       [PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee],
       [PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle],
+
+      // 골반
       [PoseLandmarkType.leftHip, PoseLandmarkType.rightHip],
+
+      // 상체
       [PoseLandmarkType.leftShoulder, PoseLandmarkType.rightShoulder],
       [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftElbow],
-      [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
       [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightElbow],
+      [PoseLandmarkType.leftElbow, PoseLandmarkType.leftWrist],
       [PoseLandmarkType.rightElbow, PoseLandmarkType.rightWrist],
+
+      // 척추
+      [PoseLandmarkType.leftShoulder, PoseLandmarkType.leftHip],
+      [PoseLandmarkType.rightShoulder, PoseLandmarkType.rightHip],
     ];
 
     for (var connection in connections) {
@@ -536,34 +764,17 @@ class PoseOverlayPainter extends CustomPainter {
       final endLandmark = landmarks?[connection[1]];
 
       if (startLandmark != null && endLandmark != null) {
-        paint.color = _getConnectionColor(phase);
+        paint
+          ..color = Colors.green.withOpacity(0.7)
+          ..strokeWidth = 3.0
+          ..style = PaintingStyle.stroke;
+
         canvas.drawLine(
           Offset(startLandmark.x * size.width, startLandmark.y * size.height),
           Offset(endLandmark.x * size.width, endLandmark.y * size.height),
           paint,
         );
       }
-    }
-  }
-
-  Color _getConfidenceColor(Likelihood confidence) {
-    if (confidence == Likelihood.high) return Colors.green;
-    if (confidence == Likelihood.medium) return Colors.yellow;
-    return Colors.red;
-  }
-
-  Color _getConnectionColor(SquatPhase phase) {
-    switch (phase) {
-      case SquatPhase.standing:
-        return Colors.blue.withOpacity(0.7);
-      case SquatPhase.descending:
-        return Colors.orange.withOpacity(0.7);
-      case SquatPhase.bottom:
-        return Colors.green.withOpacity(0.7);
-      case SquatPhase.ascending:
-        return Colors.orange.withOpacity(0.7);
-      case SquatPhase.invalid:
-        return Colors.red.withOpacity(0.7);
     }
   }
 
@@ -626,3 +837,34 @@ class SquatAnalyzer {
 enum SquatPhase { standing, descending, bottom, ascending, invalid }
 
 enum Likelihood { high, medium, low }
+
+// GuidelinePainter 클래스 추가
+class GuidelinePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+
+    // 세로 중앙선
+    canvas.drawLine(
+      Offset(size.width / 2, 0),
+      Offset(size.width / 2, size.height),
+      paint,
+    );
+
+    // 가로 기준선들
+    final guidelines = [0.3, 0.5, 0.7]; // 화면 높이의 30%, 50%, 70% 위치에 선 그리기
+    for (var ratio in guidelines) {
+      canvas.drawLine(
+        Offset(0, size.height * ratio),
+        Offset(size.width, size.height * ratio),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(GuidelinePainter oldDelegate) => false;
+}
