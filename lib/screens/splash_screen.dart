@@ -1,74 +1,93 @@
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
-import '../main.dart';
+import '../services/notification_service.dart';
+import '../services/achievement_service.dart';
+import '../services/database_helper.dart';
 
 class SplashScreen extends StatefulWidget {
-  final List<CameraDescription> cameras;
-
-  const SplashScreen({Key? key, required this.cameras}) : super(key: key);
+  const SplashScreen({super.key});
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
+class _SplashScreenState extends State<SplashScreen> {
+  bool _isInitialized = false;
+  String _statusMessage = '앱을 초기화하는 중...';
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: const Duration(seconds: 2),
-      vsync: this,
-    );
+    _initializeApp();
+  }
 
-    _animation = CurvedAnimation(
-      parent: _controller,
-      curve: Curves.easeInOut,
-    );
+  Future<void> _initializeApp() async {
+    try {
+      // 알림 서비스 초기화
+      setState(() => _statusMessage = '알림 서비스 초기화 중...');
+      await NotificationService.instance.initialize();
+      await NotificationService.instance.requestPermissions();
 
-    _controller.forward();
+      // 데이터베이스 초기화
+      setState(() => _statusMessage = '데이터베이스 초기화 중...');
+      await DatabaseHelper.instance.database;
 
-    Future.delayed(const Duration(seconds: 3), () {
+      // 업적 시스템 초기화
+      setState(() => _statusMessage = '업적 시스템 초기화 중...');
+      await AchievementService.instance.initializeAchievements();
+
+      setState(() => _isInitialized = true);
+
+      // 메인 화면으로 이동
       if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => MyApp(cameras: widget.cameras),
+        Navigator.pushReplacementNamed(context, '/main');
+      }
+    } catch (e) {
+      setState(() {
+        _statusMessage = '초기화 중 오류가 발생했습니다.\n다시 시도해주세요.';
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('오류: $e'),
+            action: SnackBarAction(
+              label: '재시도',
+              onPressed: _initializeApp,
+            ),
           ),
         );
       }
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.primary,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            FadeTransition(
-              opacity: _animation,
-              child: const Icon(
-                Icons.fitness_center,
-                size: 100,
-                color: Colors.white,
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Theme.of(context).primaryColor,
+              Theme.of(context).primaryColor.withOpacity(0.8),
+            ],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // 앱 로고
+              Image.asset(
+                'assets/images/splash_image.png',
+                width: 150,
+                height: 150,
               ),
-            ),
-            const SizedBox(height: 20),
-            FadeTransition(
-              opacity: _animation,
-              child: const Text(
+              const SizedBox(height: 32),
+
+              // 앱 이름
+              const Text(
                 'AI 스쿼트 트레이너',
                 style: TextStyle(
                   fontSize: 24,
@@ -76,12 +95,22 @@ class _SplashScreenState extends State<SplashScreen>
                   color: Colors.white,
                 ),
               ),
-            ),
-            const SizedBox(height: 40),
-            const CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-            ),
-          ],
+              const SizedBox(height: 16),
+
+              // 로딩 인디케이터
+              if (!_isInitialized) ...[
+                const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _statusMessage,
+                  style: const TextStyle(color: Colors.white),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

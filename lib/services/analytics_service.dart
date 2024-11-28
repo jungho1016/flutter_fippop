@@ -1,58 +1,188 @@
 import '../models/workout_session.dart';
+import 'database_helper.dart';
 
 class AnalyticsService {
-  static final AnalyticsService instance = AnalyticsService._internal();
-  AnalyticsService._internal();
+  static final AnalyticsService instance = AnalyticsService._();
+  AnalyticsService._();
 
-  // 일일 통계 계산
-  Map<String, dynamic> calculateDailyStats(List<WorkoutSession> sessions) {
-    if (sessions.isEmpty) {
+  Future<Map<String, dynamic>> getWeeklyStats() async {
+    final sessions = await DatabaseHelper.instance.getWorkoutSessions();
+    final now = DateTime.now();
+    final weekStart = now.subtract(Duration(days: now.weekday - 1));
+    final weekEnd = weekStart.add(const Duration(days: 7));
+
+    final weekSessions = sessions
+        .where(
+          (session) =>
+              session.startTime.isAfter(weekStart) &&
+              session.startTime.isBefore(weekEnd),
+        )
+        .toList();
+
+    final dailyStats = List.generate(7, (index) {
+      final day = weekStart.add(Duration(days: index));
+      final daySessions = weekSessions
+          .where(
+            (session) =>
+                session.startTime.year == day.year &&
+                session.startTime.month == day.month &&
+                session.startTime.day == day.day,
+          )
+          .toList();
+
       return {
-        'totalSquats': 0,
-        'averageAccuracy': 0.0,
-        'totalDuration': Duration.zero,
-        'sessionsCount': 0,
+        'date': day,
+        'squatCount':
+            daySessions.fold(0, (sum, session) => sum + session.squatCount),
+        'accuracy': daySessions.isEmpty
+            ? 0.0
+            : daySessions.fold(0.0, (sum, session) => sum + session.accuracy) /
+                daySessions.length,
+        'calories': daySessions.fold(
+            0.0, (sum, session) => sum + session.caloriesBurned),
       };
-    }
-
-    final totalSquats =
-        sessions.fold<int>(0, (sum, session) => sum + session.squatCount);
-    final averageAccuracy =
-        sessions.fold<double>(0, (sum, session) => sum + session.accuracy) /
-            sessions.length;
-    final totalDuration = sessions.fold<Duration>(
-      Duration.zero,
-      (sum, session) => sum + session.endTime.difference(session.startTime),
-    );
+    });
 
     return {
-      'totalSquats': totalSquats,
-      'averageAccuracy': averageAccuracy,
-      'totalDuration': totalDuration,
-      'sessionsCount': sessions.length,
+      'dailyStats': dailyStats,
+      'totalSquats': dailyStats.fold(
+          0, (sum, stats) => sum + (stats['squatCount'] as int)),
+      'averageAccuracy': dailyStats.fold(
+              0.0, (sum, stats) => sum + (stats['accuracy'] as double)) /
+          7,
+      'totalCalories': dailyStats.fold(
+          0.0, (sum, stats) => sum + (stats['calories'] as double)),
     };
   }
 
-  // 운동 강도 분석
-  String analyzeWorkoutIntensity(WorkoutSession session) {
-    final duration = session.endTime.difference(session.startTime);
-    final squatsPerMinute = session.squatCount / duration.inMinutes;
+  Future<Map<String, dynamic>> getMonthlyStats() async {
+    final sessions = await DatabaseHelper.instance.getWorkoutSessions();
+    final now = DateTime.now();
+    final monthStart = DateTime(now.year, now.month, 1);
+    final monthEnd = DateTime(now.year, now.month + 1, 0);
 
-    if (squatsPerMinute > 20) return '고강도';
-    if (squatsPerMinute > 10) return '중강도';
-    return '저강도';
+    final monthSessions = sessions
+        .where(
+          (session) =>
+              session.startTime.isAfter(monthStart) &&
+              session.startTime.isBefore(monthEnd),
+        )
+        .toList();
+
+    final weeklyStats = List.generate(
+      (monthEnd.difference(monthStart).inDays / 7).ceil(),
+      (weekIndex) {
+        final weekStart = monthStart.add(Duration(days: weekIndex * 7));
+        final weekEnd = weekStart.add(const Duration(days: 7));
+        final weekSessions = monthSessions
+            .where(
+              (session) =>
+                  session.startTime.isAfter(weekStart) &&
+                  session.startTime.isBefore(weekEnd),
+            )
+            .toList();
+
+        return {
+          'weekStart': weekStart,
+          'weekEnd': weekEnd,
+          'squatCount':
+              weekSessions.fold(0, (sum, session) => sum + session.squatCount),
+          'accuracy': weekSessions.isEmpty
+              ? 0.0
+              : weekSessions.fold(
+                      0.0, (sum, session) => sum + session.accuracy) /
+                  weekSessions.length,
+          'calories': weekSessions.fold(
+              0.0, (sum, session) => sum + session.caloriesBurned),
+        };
+      },
+    );
+
+    return {
+      'weeklyStats': weeklyStats,
+      'totalSquats':
+          monthSessions.fold(0, (sum, session) => sum + session.squatCount),
+      'averageAccuracy': monthSessions.isEmpty
+          ? 0.0
+          : monthSessions.fold(0.0, (sum, session) => sum + session.accuracy) /
+              monthSessions.length,
+      'totalCalories': monthSessions.fold(
+          0.0, (sum, session) => sum + session.caloriesBurned),
+      'totalWorkouts': monthSessions.length,
+    };
   }
 
-  // 진행 상황 분석
-  double calculateProgress(List<WorkoutSession> sessions, int targetSquats) {
+  Future<Map<String, dynamic>> getProgressStats() async {
+    final sessions = await DatabaseHelper.instance.getWorkoutSessions();
+    if (sessions.isEmpty) {
+      return {
+        'improvement': 0.0,
+        'consistencyScore': 0.0,
+        'streak': 0,
+        'bestAccuracy': 0.0,
+        'totalSquats': 0,
+      };
+    }
+
+    // 정확도 개선도 계산
+    final recentSessions = sessions.take(10).toList();
+    final oldSessions = sessions.skip(10).take(10).toList();
+    final recentAccuracy = recentSessions.isEmpty
+        ? 0.0
+        : recentSessions.fold(0.0, (sum, s) => sum + s.accuracy) /
+            recentSessions.length;
+    final oldAccuracy = oldSessions.isEmpty
+        ? 0.0
+        : oldSessions.fold(0.0, (sum, s) => sum + s.accuracy) /
+            oldSessions.length;
+
+    // 연속 운동 일수 계산
+    int streak = 0;
+    final now = DateTime.now();
+    var checkDate = now;
+    for (var session in sessions) {
+      if (session.startTime.year == checkDate.year &&
+          session.startTime.month == checkDate.month &&
+          session.startTime.day == checkDate.day) {
+        streak++;
+        checkDate = checkDate.subtract(const Duration(days: 1));
+      } else {
+        break;
+      }
+    }
+
+    return {
+      'improvement': oldAccuracy == 0.0
+          ? 0.0
+          : (recentAccuracy - oldAccuracy) / oldAccuracy * 100,
+      'consistencyScore': _calculateConsistencyScore(sessions),
+      'streak': streak,
+      'bestAccuracy':
+          sessions.map((s) => s.accuracy).reduce((a, b) => a > b ? a : b),
+      'totalSquats':
+          sessions.fold(0, (sum, session) => sum + session.squatCount),
+    };
+  }
+
+  double _calculateConsistencyScore(List<WorkoutSession> sessions) {
     if (sessions.isEmpty) return 0.0;
-    final totalSquats =
-        sessions.fold<int>(0, (sum, session) => sum + session.squatCount);
-    return totalSquats / targetSquats;
-  }
 
-  // 정확도 추세 분석
-  List<double> getAccuracyTrend(List<WorkoutSession> sessions) {
-    return sessions.map((session) => session.accuracy).toList();
+    final now = DateTime.now();
+    final thirtyDaysAgo = now.subtract(const Duration(days: 30));
+    final recentSessions = sessions
+        .where(
+          (session) => session.startTime.isAfter(thirtyDaysAgo),
+        )
+        .toList();
+
+    // 최근 30일 중 운동한 날의 비율을 계산
+    final daysWorkedOut = recentSessions
+        .map(
+          (s) => '${s.startTime.year}-${s.startTime.month}-${s.startTime.day}',
+        )
+        .toSet()
+        .length;
+
+    return (daysWorkedOut / 30) * 100;
   }
 }

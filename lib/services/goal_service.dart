@@ -1,6 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/workout_goal.dart';
 import 'dart:convert';
+import '../models/exercise_intensity.dart';
 
 class GoalService {
   static final GoalService instance = GoalService._();
@@ -18,7 +19,7 @@ class GoalService {
         workoutDuration: const Duration(minutes: 30),
         accuracyTarget: 80.0,
         minAccuracy: 70.0,
-        intensity: 'medium',
+        intensity: ExerciseIntensity.medium,
       );
     }
     return WorkoutGoal.fromJson(Map<String, dynamic>.from(
@@ -52,5 +53,23 @@ class GoalService {
   Future<void> saveGoal(WorkoutGoal goal) async {
     // TODO: 실제 저장 로직 구현
     // 예: SharedPreferences나 데이터베이스에 저장
+  }
+
+  Future<void> saveIntensity(ExerciseIntensity intensity) async {
+    // 운동 강도 저장 로직
+  }
+
+  Future<void> saveTargetSquats(int count) async {
+    // 목표 스쿼트 횟수 저장 로직
+  }
+
+  Future<ExerciseIntensity> getIntensity() async {
+    // 운동 강도 불러오기 로직
+    return ExerciseIntensity.medium;
+  }
+
+  Future<int> getTargetSquats() async {
+    // 목표 스쿼트 횟수 불러오기 로직
+    return 20;
   }
 }

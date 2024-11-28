@@ -5,8 +5,9 @@ class WorkoutSession {
   final int squatCount;
   final double accuracy;
   final double averageDuration;
-  final List<ExerciseSet> sets;
   final double caloriesBurned;
+  final List<ExerciseSet> sets;
+  final List<String> feedbacks;
 
   WorkoutSession({
     this.id,
@@ -15,9 +16,12 @@ class WorkoutSession {
     required this.squatCount,
     required this.accuracy,
     required this.averageDuration,
-    this.sets = const [],
-    this.caloriesBurned = 0,
+    required this.caloriesBurned,
+    required this.sets,
+    this.feedbacks = const [],
   });
+
+  Duration get duration => endTime.difference(startTime);
 
   Map<String, dynamic> toMap() {
     return {
@@ -28,6 +32,7 @@ class WorkoutSession {
       'accuracy': accuracy,
       'averageDuration': averageDuration,
       'caloriesBurned': caloriesBurned,
+      'feedbacks': feedbacks.join('|'),
     };
   }
 
@@ -40,6 +45,8 @@ class WorkoutSession {
       accuracy: map['accuracy'],
       averageDuration: map['averageDuration'],
       caloriesBurned: map['caloriesBurned'],
+      sets: [], // 세트 정보는 별도로 로드
+      feedbacks: map['feedbacks']?.split('|') ?? [],
     );
   }
 
@@ -50,8 +57,9 @@ class WorkoutSession {
     int? squatCount,
     double? accuracy,
     double? averageDuration,
-    List<ExerciseSet>? sets,
     double? caloriesBurned,
+    List<ExerciseSet>? sets,
+    List<String>? feedbacks,
   }) {
     return WorkoutSession(
       id: id ?? this.id,
@@ -60,8 +68,9 @@ class WorkoutSession {
       squatCount: squatCount ?? this.squatCount,
       accuracy: accuracy ?? this.accuracy,
       averageDuration: averageDuration ?? this.averageDuration,
-      sets: sets ?? this.sets,
       caloriesBurned: caloriesBurned ?? this.caloriesBurned,
+      sets: sets ?? this.sets,
+      feedbacks: feedbacks ?? this.feedbacks,
     );
   }
 }
@@ -70,10 +79,30 @@ class ExerciseSet {
   final int repetitions;
   final double accuracy;
   final Duration duration;
+  final List<String> feedbacks;
 
   ExerciseSet({
     required this.repetitions,
     required this.accuracy,
     required this.duration,
+    this.feedbacks = const [],
   });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'repetitions': repetitions,
+      'accuracy': accuracy,
+      'duration': duration.inMilliseconds,
+      'feedbacks': feedbacks.join('|'),
+    };
+  }
+
+  factory ExerciseSet.fromMap(Map<String, dynamic> map) {
+    return ExerciseSet(
+      repetitions: map['repetitions'],
+      accuracy: map['accuracy'],
+      duration: Duration(milliseconds: map['duration']),
+      feedbacks: map['feedbacks']?.split('|') ?? [],
+    );
+  }
 }

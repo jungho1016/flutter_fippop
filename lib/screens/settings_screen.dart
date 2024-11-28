@@ -1,57 +1,79 @@
 import 'package:flutter/material.dart';
+import '../models/exercise_intensity.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  ExerciseIntensity _intensity = ExerciseIntensity.medium;
+  int _targetSquats = 20;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('설정'),
-        elevation: 0,
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
         children: [
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.person),
-              title: const Text('프로필 설정'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                // 프로필 설정 페이지로 이동
-              },
-            ),
+          ListTile(
+            title: const Text('운동 강도'),
+            subtitle: Text(_intensity.displayName),
+            onTap: _showIntensityDialog,
           ),
-          const SizedBox(height: 12),
-          Card(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.notifications),
-                  title: const Text('알림 설정'),
-                  trailing: Switch(
-                    value: true, // 알림 상태값 연동 필요
-                    onChanged: (value) {
-                      // 알림 설정 변경 처리
-                    },
-                  ),
-                ),
-                const Divider(),
-                ListTile(
-                  leading: const Icon(Icons.dark_mode),
-                  title: const Text('다크 모드'),
-                  trailing: Switch(
-                    value: false, // 테마 상태값 연동 필요
-                    onChanged: (value) {
-                      // 테마 변경 처리
-                    },
-                  ),
-                ),
-              ],
-            ),
+          ListTile(
+            title: const Text('목표 스쿼트 횟수'),
+            subtitle: Text('$_targetSquats회'),
+            onTap: _showTargetSquatsDialog,
           ),
         ],
+      ),
+    );
+  }
+
+  void _showIntensityDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('운동 강도 선택'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: ExerciseIntensity.values.map((intensity) {
+            return RadioListTile<ExerciseIntensity>(
+              title: Text(intensity.displayName),
+              value: intensity,
+              groupValue: _intensity,
+              onChanged: (value) {
+                setState(() {
+                  _intensity = value!;
+                });
+                Navigator.pop(context);
+              },
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  void _showTargetSquatsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('목표 스쿼트 횟수'),
+        content: TextField(
+          keyboardType: TextInputType.number,
+          onSubmitted: (value) {
+            setState(() {
+              _targetSquats = int.tryParse(value) ?? _targetSquats;
+            });
+            Navigator.pop(context);
+          },
+        ),
       ),
     );
   }
