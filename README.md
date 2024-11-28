@@ -26,20 +26,7 @@ ML Kit를 활용한 실시간 스쿼트 자세 감지 Flutter 애플리케이션
   - 정확한 횟수 측정
   - 자동 카운팅 시스템
 
-## 🚀 스크린샷
-
-<p align="center">
-  <img src="screenshots/standing.png" width="200" alt="Standing Position"/>
-  <img src="screenshots/descending.png" width="200" alt="Descending Position"/>
-  <img src="screenshots/bottom.png" width="200" alt="Bottom Position"/>
-</p>
-
-<p align="center">
-  <img src="screenshots/feedback.png" width="200" alt="Feedback Screen"/>
-  <img src="screenshots/counter.png" width="200" alt="Counter Screen"/>
-</p>
-
-## 🛠 기술 스택
+## 🚀 기술 스택
 
 - Flutter
 - Google ML Kit
