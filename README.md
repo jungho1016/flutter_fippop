@@ -26,35 +26,18 @@ ML Kit를 활용한 실시간 스쿼트 자세 감지 Flutter 애플리케이션
   - 정확한 횟수 측정
   - 자동 카운팅 시스템
 
-## 🚀 시작하기
+## 🚀 스크린샷
 
-### 필수 조건
+<p align="center">
+  <img src="screenshots/standing.png" width="200" alt="Standing Position"/>
+  <img src="screenshots/descending.png" width="200" alt="Descending Position"/>
+  <img src="screenshots/bottom.png" width="200" alt="Bottom Position"/>
+</p>
 
-- Flutter SDK (2.0.0 이상)
-- Android Studio 또는 VS Code
-- iOS/Android 개발 환경 설정
-
-### 설치 방법
-
-1. 저장소 클론
-```bash
-git clone https://github.com/jungho1016/flutter_fippop.git
-```
-
-2. 의존성 설치
-```bash
-cd flutter_fippop
-flutter pub get
-```
-
-3. 앱 실행
-```bash
-flutter run
-```
-
-## 📱 스크린샷
-
-[스크린샷 추가 예정]
+<p align="center">
+  <img src="screenshots/feedback.png" width="200" alt="Feedback Screen"/>
+  <img src="screenshots/counter.png" width="200" alt="Counter Screen"/>
+</p>
 
 ## 🛠 기술 스택
 
