@@ -91,7 +91,3 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/custom-fonts/#from-packages
-
-  assets:
-    - assets/posenet_mv1_075_float_from_checkpoints.tflite
-    - assets/posenet_labels.txt

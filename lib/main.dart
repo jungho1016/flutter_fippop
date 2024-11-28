@@ -20,6 +20,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Squat Pose Detection',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
@@ -156,20 +157,26 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
       return;
     }
 
-    cameraController = CameraController(
-      widget.cameras[0],
-      ResolutionPreset.medium,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.bgra8888,
-    );
-
     try {
+      cameraController = CameraController(
+        widget.cameras[0],
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.bgra8888,
+      );
+
       await cameraController!.initialize();
-      if (mounted) {
-        setState(() {});
-        // 카메라 초기화 후 포즈 감지 시작
-        detectPose();
-      }
+
+      if (!mounted) return;
+
+      setState(() {});
+
+      // 카메라가 초기화된 후 약간의 지연을 주고 포즈 감지 시작
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          detectPose();
+        }
+      });
     } catch (e) {
       print('카메라 초기화 오류: $e');
     }
@@ -184,23 +191,39 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
   }
 
   Future<void> _processImage(CameraImage image) async {
-    final inputImage = InputImage.fromBytes(
-      bytes: image.planes[0].bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: InputImageRotation.rotation90deg, // 카메라 방향에 따라 조정 필요
-        format: InputImageFormat.bgra8888, // 이미지 포맷
-        bytesPerRow: image.planes[0].bytesPerRow,
-      ),
-    );
-
     try {
+      // 이미지 처리 중에 카메라가 해제되었는지 확인
+      if (!mounted || cameraController == null) return;
+
+      final inputImage = InputImage.fromBytes(
+        bytes: image.planes[0].bytes,
+        metadata: InputImageMetadata(
+          size: Size(image.width.toDouble(), image.height.toDouble()),
+          rotation: InputImageRotation.rotation90deg,
+          format: InputImageFormat.bgra8888,
+          bytesPerRow: image.planes[0].bytesPerRow,
+        ),
+      );
+
+      if (_poseDetector == null) return;
+
       final poses = await _poseDetector?.processImage(inputImage);
+
+      // 상태 업데이트 전에 위젯이 여전히 마운트되어 있는지 확인
+      if (!mounted) return;
+
       if (poses != null && poses.isNotEmpty) {
         final pose = poses.first;
         setState(() {
           currentPose = pose.landmarks;
-          currentPhase = _analyzePose(pose);
+          final newPhase = _analyzePose(pose);
+
+          // 스쿼트 카운트 업데이트 로직 추가
+          if (currentPhase == SquatPhase.bottom &&
+              newPhase == SquatPhase.ascending) {
+            squatCount++;
+          }
+          currentPhase = newPhase;
         });
       }
     } catch (e) {
@@ -236,18 +259,24 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
     if (!isDetecting) {
       isDetecting = true;
 
-      await cameraController?.startImageStream((CameraImage image) async {
-        if (isDetecting) {
-          await _processImage(image);
-        }
-      });
+      try {
+        await cameraController?.startImageStream((CameraImage image) async {
+          if (isDetecting && mounted) {
+            await _processImage(image);
+          }
+        });
+      } catch (e) {
+        print('이미지 스트림 시작 오류: $e');
+        isDetecting = false;
+      }
     }
   }
 
   @override
   void dispose() {
-    _poseDetector?.close();
-    cameraController?.dispose();
+    isDetecting = false; // 이미지 처리 중지
+    _poseDetector?.close(); // ML Kit 리소스 해제
+    cameraController?.dispose(); // 카메라 리소스 해제
     super.dispose();
   }
 
