@@ -5,11 +5,11 @@ import 'package:camera/camera.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'dart:async';
 import 'dart:math' show pi, acos, sqrt, pow;
-import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
 import 'screens/settings_screen.dart';
 import 'services/notification_service.dart';
 import 'services/goal_service.dart';
+import 'services/error_handler.dart' as app_error;
 
 // main 함수 수정
 Future<void> main() async {
@@ -226,27 +226,69 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
         ExerciseIntensity.hard: 80.0, // 어려움: 깊은 스쿼트
       };
 
-  FlutterTts flutterTts = FlutterTts();
-  bool _isSpeaking = false;
+  final bool _isSpeaking = false;
+
+  // 프레임 처리 최적화
+  bool _processingFrame = false;
+
+  Future<void> _processFrame(CameraImage image) async {
+    if (_processingFrame) return;
+    _processingFrame = true;
+
+    try {
+      await app_error.ErrorHandler.instance.wrapError(() async {
+        final inputImage = InputImage.fromBytes(
+          bytes: image.planes[0].bytes,
+          metadata: InputImageMetadata(
+            size: Size(image.width.toDouble(), image.height.toDouble()),
+            rotation: InputImageRotation.rotation90deg,
+            format: InputImageFormat.bgra8888,
+            bytesPerRow: image.planes[0].bytesPerRow,
+          ),
+        );
+
+        final poses = await _poseDetector?.processImage(inputImage);
+
+        if (poses != null && poses.isNotEmpty && mounted) {
+          setState(() {
+            currentPose = poses.first.landmarks;
+            _updatePoseAnalysis();
+          });
+        }
+      });
+    } catch (e) {
+      app_error.ErrorHandler.instance.handleError(context, e);
+    } finally {
+      _processingFrame = false;
+    }
+  }
+
+  void _updatePoseAnalysis() async {
+    if (currentPose == null) return;
+
+    final newPhase = _analyzePose(currentPose!);
+    if (mounted) {
+      setState(() {
+        currentPhase = newPhase;
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _initializeCamera();
     _initializePoseDetector();
-    _initializeTTS();
     _startExerciseTimer();
     NotificationService.instance.initialize();
   }
 
   Future<void> _initializeCamera() async {
-    if (widget.cameras.isEmpty) {
-      print('사용 가능한 카메라가 없습니다.');
-      return;
-    }
-
     try {
-      // 후면 카메라로 시작
+      if (widget.cameras.isEmpty) {
+        throw CameraException('NO_CAMERA', '사용 가능한 카메라가 없습니다.');
+      }
+
       final backCamera = widget.cameras.firstWhere(
         (camera) => camera.lensDirection == CameraLensDirection.back,
         orElse: () => widget.cameras.first,
@@ -254,25 +296,23 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
 
       cameraController = CameraController(
         backCamera,
-        ResolutionPreset.low, // 해상도를 낮춤
+        ResolutionPreset.low,
         enableAudio: false,
         imageFormatGroup: Platform.isAndroid
             ? ImageFormatGroup.yuv420
             : ImageFormatGroup.bgra8888,
       );
 
-      await cameraController!.initialize();
-      if (!mounted) return;
+      await app_error.ErrorHandler.instance
+          .wrapError(() => cameraController!.initialize());
 
-      setState(() {});
-
-      // 포즈 감지 시작 전 지연
-      await Future.delayed(const Duration(seconds: 2));
       if (mounted) {
+        setState(() {});
+        await Future.delayed(const Duration(seconds: 2));
         detectPose();
       }
     } catch (e) {
-      print('카라 초기화 오류: $e');
+      app_error.ErrorHandler.instance.handleError(context, e);
     }
   }
 
@@ -330,7 +370,7 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
       if (_checkPoseReliability(pose)) {
         setState(() {
           currentPose = pose.landmarks;
-          final newPhase = _analyzePose(pose);
+          final newPhase = _analyzePose(pose.landmarks);
           if (currentPhase == SquatPhase.bottom &&
               newPhase == SquatPhase.ascending) {
             squatCount++;
@@ -341,8 +381,8 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
     }
   }
 
-  SquatPhase _analyzePose(Pose pose) {
-    final smoothedPose = _smoothPose(pose.landmarks);
+  SquatPhase _analyzePose(Map<PoseLandmarkType, PoseLandmark> landmarks) {
+    final smoothedPose = _smoothPose(landmarks);
     if (smoothedPose == null) return SquatPhase.invalid;
 
     double? kneeAngle = _calculateKneeAngle(smoothedPose);
@@ -387,7 +427,7 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
         });
 
         // 정확도가 낮을 때 알림
-        final accuracy = _calculatePoseAccuracy(pose.landmarks);
+        final accuracy = _calculatePoseAccuracy(landmarks);
         if (accuracy < 60) {
           NotificationService.instance.showAccuracyWarning();
         }
@@ -488,7 +528,6 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
     cameraController?.dispose();
     _poseDetector?.close();
     _exerciseTimer?.cancel();
-    flutterTts.stop();
     super.dispose();
   }
 
@@ -770,13 +809,13 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
       case SquatPhase.standing:
         return '천천히 무릎을 구부려주세요';
       case SquatPhase.descending:
-        return '등을 똑바로 유지하면서 내려가세요';
+        return '등을 똑바로 유지��면서 내려가세요';
       case SquatPhase.bottom:
         return '좋습니다! 이 자세를 잠시 유지하세요';
       case SquatPhase.ascending:
         return '천히 일어나세요';
       case SquatPhase.invalid:
-        return '카메라 앞에서 전신이 보이도 서주세요';
+        return '카메라 앞에서 전신이 보이 서주세요';
     }
   }
 
@@ -900,7 +939,7 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
     NotificationService.instance.showWorkoutReminder();
   }
 
-  // 운동 세션 종료
+  // 동 세션 종료
   void _endSession() {
     if (sessionStartTime != null) {
       final duration = DateTime.now().difference(sessionStartTime!);
@@ -997,23 +1036,12 @@ class _PoseRecognitionAppState extends State<PoseRecognitionApp> {
   void _showSettingsDialog() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => SettingsScreen()),
+      MaterialPageRoute(builder: (context) => const SettingsScreen()),
     );
   }
 
-  Future<void> _initializeTTS() async {
-    await flutterTts.setLanguage('ko-KR');
-    await flutterTts.setSpeechRate(0.5);
-    await flutterTts.setVolume(1.0);
-    await flutterTts.setPitch(1.0);
-  }
-
   Future<void> _speakFeedback(String text) async {
-    if (!_isSpeaking) {
-      _isSpeaking = true;
-      await flutterTts.speak(text);
-      _isSpeaking = false;
-    }
+    print('Feedback: $text');
   }
 
   void _provideHapticFeedback() async {

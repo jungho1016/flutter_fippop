@@ -38,6 +38,9 @@ class DatabaseHelper {
       )
     ''');
 
+    await db.execute(
+        'CREATE INDEX idx_workout_sessions_startTime ON workout_sessions(startTime)');
+
     await db.execute('''
       CREATE TABLE exercise_sets(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,20 +55,23 @@ class DatabaseHelper {
   }
 
   Future<int> insertWorkoutSession(WorkoutSession session) async {
-    final db = await database;
-    final id = await db.insert('workout_sessions', session.toMap());
+    try {
+      final db = await database;
+      final id = await db.insert('workout_sessions', session.toMap());
 
-    // 세트 정보도 저장
-    for (var set in session.sets) {
-      await db.insert('exercise_sets', {
-        'sessionId': id,
-        'repetitions': set.repetitions,
-        'accuracy': set.accuracy,
-        'duration': set.duration.inMilliseconds,
-      });
+      for (var set in session.sets) {
+        await db.insert('exercise_sets', {
+          'sessionId': id,
+          'repetitions': set.repetitions,
+          'accuracy': set.accuracy,
+          'duration': set.duration.inMilliseconds,
+        });
+      }
+
+      return id;
+    } catch (e) {
+      throw Exception('운동 세션 저장 중 오류가 발생했습니다. Error: $e');
     }
-
-    return id;
   }
 
   Future<List<WorkoutSession>> getWorkoutSessions() async {
@@ -92,5 +98,50 @@ class DatabaseHelper {
         duration: Duration(milliseconds: maps[i]['duration']),
       );
     });
+  }
+
+  Future<List<WorkoutSession>> getAllWorkoutSessions() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps =
+        await db.query('workout_sessions', orderBy: 'startTime DESC');
+
+    return List.generate(maps.length, (i) {
+      return WorkoutSession.fromMap(maps[i]);
+    });
+  }
+
+  Future<void> deleteAllWorkoutSessions() async {
+    final db = await database;
+    await db.delete('workout_sessions');
+  }
+
+  Future<void> insertWorkoutSessionBatch(List<WorkoutSession> sessions) async {
+    final db = await database;
+    final batch = db.batch();
+
+    for (var session in sessions) {
+      batch.insert('workout_sessions', session.toMap());
+    }
+
+    await batch.commit(noResult: true);
+  }
+
+  Future<List<WorkoutSession>> getWorkoutSessionsPaginated({
+    required int limit,
+    required int offset,
+  }) async {
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> maps = await db.query(
+        'workout_sessions',
+        orderBy: 'startTime DESC',
+        limit: limit,
+        offset: offset,
+      );
+
+      return List.generate(maps.length, (i) => WorkoutSession.fromMap(maps[i]));
+    } catch (e) {
+      throw Exception('운동 기록을 불러오는 중 오류가 발생했습니다. Error: $e');
+    }
   }
 }
