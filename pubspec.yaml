@@ -10,11 +10,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  shared_preferences: ^2.2.2
   
   # 카메라 및 ML Kit
   camera: ^0.10.5+9
   google_mlkit_pose_detection: ^0.9.0
   image: ^4.0.15
+  google_mlkit_commons: ^0.5.0
   
   # UI 컴포넌트
   cupertino_icons: ^1.0.2
@@ -23,9 +25,8 @@ dependencies:
   shimmer: ^3.0.0
   
   # 상태 관리 및 저장소
-  shared_preferences: ^2.2.2
   sqflite: ^2.3.0
-  path_provider: ^2.1.1
+  path_provider: ^2.1.2
   path: ^1.8.3
   
   # 유틸리티
@@ -38,6 +39,12 @@ dependencies:
   timezone: ^0.9.2
   
   table_calendar: ^3.0.9
+  
+  image_picker: ^1.0.7
+  permission_handler: ^10.4.5
+  flutter_riverpod: ^2.4.9
+  image_gallery_saver: ^2.0.3
+  provider: ^6.0.0
   
 dev_dependencies:
   flutter_test:

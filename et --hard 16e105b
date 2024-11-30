@@ -1,0 +1,11 @@
+[33m16e105b[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m Add splash screen image and configuration
+[33m8781f51[m fix: Update Kotlin version
+[33mf75b5f3[m feat: 스크린 추가 및 테마 수정
+[33mc9f9413[m version 2 업데이트
+[33m1b222f8[m safety: version_1 - Remove debug banner and stabilize camera initialization
+[33m231bf5a[m docs: Update README.md and remove screenshot section
+[33m44b83fc[m feat: Implement pose detection with ML Kit and update README
+[33mca22119[m docs: Update README.md with better formatting and content
+[33md997bb4[m Merge remote changes
+[33m9ee8d91[m Initial commit
+[33m3f943f4[m Initial commit: Flutter squat pose detection app

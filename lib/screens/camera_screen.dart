@@ -1,274 +1,342 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
 import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
-import 'dart:async';
-import 'settings_screen.dart';
-import '../widgets/pose_overlay_painter.dart';
+import '../widgets/camera_controls.dart';
+import '../widgets/camera_overlay.dart';
 import '../models/squat_phase.dart';
-import '../models/exercise_intensity.dart';
+import '../services/pose_analyzer.dart';
+import '../services/camera_image_converter.dart';
+import '../widgets/pose_guide.dart';
+import '../models/squat_counter.dart';
+import '../widgets/squat_counter_display.dart';
+import '../widgets/pose_skeleton_widget.dart';
+import '../services/database_service.dart';
+import '../models/squat_record.dart';
+import '../models/pose_error.dart';
+
+Future<CameraController> initializeCamera() async {
+  final cameras = await availableCameras();
+  final controller = CameraController(
+    cameras[0],
+    ResolutionPreset.high,
+    enableAudio: false,
+    imageFormatGroup: ImageFormatGroup.bgra8888,
+  );
+  await controller.initialize();
+  return controller;
+}
 
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({
-    super.key,
-    required this.title,
-    required this.cameras,
-  });
-
-  final String title;
-  final List<CameraDescription> cameras;
+  const CameraScreen({super.key});
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen>
-    with WidgetsBindingObserver {
-  bool isDetecting = false;
-  CameraController? cameraController;
-  PoseDetector? _poseDetector;
-  Map<PoseLandmarkType, PoseLandmark>? currentPose;
-  final bool _processingFrame = false;
-
-  // 운동 상태 관리
-  SquatPhase currentPhase = SquatPhase.standing;
-  int squatCount = 0;
-  DateTime? sessionStartTime;
-  double accuracyScore = 0.0;
-  List<Duration> squatDurations = [];
-  Timer? _exerciseTimer;
-
-  // 설정값
-  final ExerciseIntensity _intensity = ExerciseIntensity.medium;
-  final int _targetSquats = 20;
+class _CameraScreenState extends State<CameraScreen> {
+  bool _isFlashOn = false;
+  XFile? _lastImage;
+  final _poseDetector = PoseDetector(
+    options: PoseDetectorOptions(
+      mode: PoseDetectionMode.stream,
+      model: PoseDetectionModel.accurate,
+    ),
+  );
+  List<Pose>? _detectedPoses;
+  SquatPhase _currentPhase = SquatPhase.standing;
+  bool _isProcessing = false;
+  final _squatCounter = SquatCounter();
+  CameraController? _cameraController;
+  bool _isInitializing = true;
+  final DatabaseService _databaseService = DatabaseService();
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
+    _requestPermissions();
     _initializeCamera();
-    _initializePoseDetector();
-    _startExerciseTimer();
-    _loadSettings();
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _exerciseTimer?.cancel();
-    cameraController?.dispose();
-    _poseDetector?.close();
-    super.dispose();
   }
 
   Future<void> _initializeCamera() async {
     try {
-      cameraController = CameraController(
-        widget.cameras[0],
-        ResolutionPreset.high,
+      final cameras = await availableCameras();
+      _cameraController = CameraController(
+        cameras[0],
+        ResolutionPreset.veryHigh,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.bgra8888,
       );
-      await cameraController!.initialize();
+      await _cameraController!.initialize();
+      await _cameraController!
+          .lockCaptureOrientation(DeviceOrientation.portraitUp);
       if (mounted) {
-        setState(() {});
+        await _cameraController!.startImageStream(_processCameraImage);
+        setState(() => _isInitializing = false);
       }
     } catch (e) {
-      debugPrint('카메라 초기화 오류: $e');
+      debugPrint('카메라 초기화 실패: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('카메라를 시작할 수 없습니다')),
+        );
+      }
     }
   }
 
-  Future<void> _initializePoseDetector() async {
-    final options = PoseDetectorOptions(
-      mode: PoseDetectionMode.stream,
-      model: PoseDetectionModel.accurate,
-    );
-    _poseDetector = PoseDetector(options: options);
+  @override
+  void dispose() {
+    _poseDetector.close();
+    _squatCounter.dispose();
+    _cameraController?.dispose();
+    super.dispose();
   }
 
-  void _startExerciseTimer() {
-    sessionStartTime = DateTime.now();
-    _exerciseTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) {
-        setState(() {});
+  Future<void> _processCameraImage(CameraImage image) async {
+    if (_isProcessing) return;
+    _isProcessing = true;
+
+    try {
+      debugPrint('=== 이미지 처리 시작 ===');
+      debugPrint('이미지 크기: ${image.width}x${image.height}');
+      debugPrint('이미지 포맷: ${image.format.group}');
+      debugPrint('플레인 수: ${image.planes.length}');
+
+      final inputImage = CameraImageConverter.convertToInputImage(image);
+      if (inputImage == null) {
+        debugPrint('❌ 이미지 변환 실패');
+        return;
       }
-    });
+      debugPrint('✅ 이미지 변환 성공');
+      debugPrint(
+          '변환된 이미지 크기: ${inputImage.metadata?.size.width}x${inputImage.metadata?.size.height}');
+      debugPrint('변환된 이미지 회전: ${inputImage.metadata?.rotation}');
+      debugPrint('변환된 이미지 포맷: ${inputImage.metadata?.format}');
+
+      debugPrint('🔍 포즈 감지 시작');
+      try {
+        final poses = await _poseDetector.processImage(inputImage);
+        debugPrint('감지된 포즈 수: ${poses.length}');
+
+        if (poses.isNotEmpty) {
+          final landmarks = poses.first.landmarks;
+          debugPrint('감지된 랜드마크 수: ${landmarks.length}');
+          debugPrint('주요 랜드마크 좌표:');
+          debugPrint(
+              '- 왼쪽 어깨: ${landmarks[PoseLandmarkType.leftShoulder]?.x}, ${landmarks[PoseLandmarkType.leftShoulder]?.y}');
+          debugPrint(
+              '- 오른쪽 어깨: ${landmarks[PoseLandmarkType.rightShoulder]?.x}, ${landmarks[PoseLandmarkType.rightShoulder]?.y}');
+          debugPrint(
+              '- 왼쪽 엉덩이: ${landmarks[PoseLandmarkType.leftHip]?.x}, ${landmarks[PoseLandmarkType.leftHip]?.y}');
+
+          if (mounted) {
+            setState(() {
+              _detectedPoses = poses;
+              _currentPhase = PoseAnalyzer.analyzeSquat(landmarks);
+            });
+            _squatCounter.updatePhase(_currentPhase);
+            debugPrint('✅ 포즈 분석 완료: $_currentPhase');
+          }
+        } else {
+          debugPrint('❌ 포즈가 감지되지 않음');
+        }
+      } catch (e, stack) {
+        debugPrint('❌ 포즈 감지 오류: $e');
+        debugPrint('스택 트레이스: $stack');
+      }
+    } catch (e, stack) {
+      debugPrint('❌ 전체 처리 오류: $e');
+      debugPrint('스택 트레이스: $stack');
+    } finally {
+      _isProcessing = false;
+      debugPrint('=== 이미지 처리 완료 ===\n');
+    }
   }
 
-  Future<void> _loadSettings() async {
-    // 설정값을 로드하는 로직을 여기에 구현
-    // 나중에 실제 설정 로직을 추가할 수 있습니다
+  Future<void> _requestPermissions() async {
+    await Permission.camera.request();
+    await Permission.storage.request();
   }
 
-  Future<void> _switchCamera() async {
-    if (widget.cameras.length < 2) return;
-
-    final newCameraIndex =
-        cameraController?.description == widget.cameras[0] ? 1 : 0;
-
-    await cameraController?.dispose();
-
-    setState(() {
-      cameraController = CameraController(
-        widget.cameras[newCameraIndex],
-        ResolutionPreset.high,
-        enableAudio: false,
-      );
-    });
-
-    await cameraController?.initialize();
+  Future<void> _saveToGallery(String path) async {
+    final bytes = await File(path).readAsBytes();
+    await ImageGallerySaver.saveImage(bytes);
   }
 
-  Future<void> _showSettingsDialog() async {
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const SettingsScreen(),
+  Widget _buildThumbnail() {
+    if (_lastImage == null) return const SizedBox();
+
+    return Positioned(
+      bottom: 32,
+      left: 32,
+      child: GestureDetector(
+        onTap: () {
+          // TODO: 이미지 상세보기 화면으로 이동
+        },
+        child: Container(
+          width: 60,
+          height: 60,
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white, width: 2),
+            borderRadius: BorderRadius.circular(8),
+            image: DecorationImage(
+              image: FileImage(File(_lastImage!.path)),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  void _finishWorkout() {
-    setState(() {
-      isDetecting = false;
-      sessionStartTime = null;
-      squatCount = 0;
-      accuracyScore = 0.0;
-      squatDurations.clear();
-    });
-  }
+  Future<void> _finishWorkout() async {
+    if (_squatCounter.count > 0) {
+      final record = SquatRecord(
+        id: 0,
+        dateTime: DateTime.now(),
+        count: _squatCounter.count,
+        accuracy: _squatCounter.accuracy,
+        duration: Duration(seconds: _squatCounter.duration),
+      );
 
-  // ... (나머지 메서드들은 main.dart에서 가져옴)
+      await _databaseService.insertRecord(record);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('운동 기록이 저장되었습니다')),
+        );
+        Navigator.pushNamed(context, '/history'); // 기록 화면으로 이동
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (cameraController == null || !cameraController!.value.isInitialized) {
+    if (_isInitializing ||
+        _cameraController == null ||
+        !_cameraController!.value.isInitialized) {
       return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.flip_camera_android),
-            onPressed: _switchCamera,
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _showSettingsDialog,
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Stack(
-          fit: StackFit.expand,
+    return ChangeNotifierProvider<SquatCounter>.value(
+      value: _squatCounter,
+      child: Scaffold(
+        body: Stack(
           children: [
-            Transform.scale(
-              scale: 1.0,
-              child: AspectRatio(
-                aspectRatio: 1 / cameraController!.value.aspectRatio,
-                child: CameraPreview(cameraController!),
-              ),
-            ),
-            CustomPaint(
-              painter: PoseOverlayPainter(
-                landmarks: currentPose,
-                phase: currentPhase,
+            Center(
+              child: Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.95,
+                  maxHeight: MediaQuery.of(context).size.height * 0.98,
+                ),
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(_cameraController!),
+                      if (_detectedPoses != null && _detectedPoses!.isNotEmpty)
+                        Positioned.fill(
+                          child: PoseSkeletonWidget(
+                            landmarks: _detectedPoses!.first.landmarks,
+                            phase: _currentPhase,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
             Positioned(
-              top: 16,
+              top: 40,
               left: 16,
-              right: 16,
-              child: _buildInfoPanel(),
-            ),
-            Positioned(
-              bottom: 16,
-              left: 16,
-              right: 16,
-              child: _buildControlPanel(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInfoPanel() {
-    final exerciseTime = sessionStartTime != null
-        ? DateTime.now().difference(sessionStartTime!)
-        : Duration.zero;
-
-    return Card(
-      color: Colors.black54,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '스쿼트 횟수: $squatCount / $_targetSquats',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.arrow_back,
+                  color: Colors.white,
+                ),
+                onPressed: () {
+                  // 운동 중이라면 초기화
+                  _squatCounter.reset();
+                  // 모든 화면을 제거하고 홈 화면으로 이동
+                  Navigator.pushNamedAndRemoveUntil(
+                    context,
+                    '/',
+                    (route) => false, // 모든 이전 화면 제거
+                  );
+                },
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              '정확도: ${accuracyScore.toStringAsFixed(1)}%',
-              style: const TextStyle(color: Colors.white, fontSize: 16),
-            ),
-            Text(
-              '운동 시간: ${exerciseTime.inMinutes}:${(exerciseTime.inSeconds % 60).toString().padLeft(2, '0')}',
-              style: const TextStyle(color: Colors.white, fontSize: 16),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildControlPanel() {
-    return Card(
-      color: Colors.black54,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            IconButton(
-              icon: Icon(
-                isDetecting ? Icons.pause : Icons.play_arrow,
-                color: Colors.white,
-                size: 32,
-              ),
-              onPressed: () {
-                setState(() {
-                  isDetecting = !isDetecting;
-                  if (isDetecting && sessionStartTime == null) {
-                    sessionStartTime = DateTime.now();
+            const CameraOverlay(),
+            CameraControls(
+              onCapture: () async {
+                try {
+                  final image = await _cameraController!.takePicture();
+                  await _saveToGallery(image.path);
+                  setState(() => _lastImage = image);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('사진이 갤러리에 저장되었습니다')),
+                    );
                   }
-                });
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('사진 촬영에 실패했습니다')),
+                    );
+                  }
+                }
               },
+              onFlipCamera: () async {
+                final cameras = await availableCameras();
+                final newCamera = _cameraController!.description == cameras[0]
+                    ? cameras[1]
+                    : cameras[0];
+
+                await _cameraController!.dispose();
+                final newController = CameraController(
+                  newCamera,
+                  ResolutionPreset.max,
+                  enableAudio: false,
+                );
+                await newController.initialize();
+                setState(() {});
+              },
+              onFlashToggle: () async {
+                setState(() => _isFlashOn = !_isFlashOn);
+                await _cameraController!.setFlashMode(
+                  _isFlashOn ? FlashMode.torch : FlashMode.off,
+                );
+              },
+              isFlashOn: _isFlashOn,
             ),
-            IconButton(
-              icon: const Icon(
-                Icons.stop,
-                color: Colors.white,
-                size: 32,
+            _buildThumbnail(),
+            PoseGuide(
+              poses: _detectedPoses,
+              phase: _currentPhase,
+              error: PoseError.none,
+            ),
+            const SquatCounterDisplay(),
+            if (_squatCounter.count > 0)
+              Positioned(
+                right: 16,
+                bottom: 100,
+                child: FloatingActionButton(
+                  onPressed: _finishWorkout,
+                  backgroundColor: Colors.green,
+                  child: const Icon(Icons.check),
+                ),
               ),
-              onPressed: squatCount > 0 ? _finishWorkout : null,
-            ),
           ],
         ),
       ),
     );
   }
-
-  // ... (나머지 UI 관련 메서드들은 main.dart에서 가져옴)
 }

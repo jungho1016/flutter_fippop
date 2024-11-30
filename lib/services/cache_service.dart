@@ -4,11 +4,11 @@ class CacheService {
 
   CacheService._init();
 
-  static const int MAX_CACHE_SIZE = 100;
-  static const Duration CACHE_DURATION = Duration(minutes: 30);
+  static const int maxCacheSize = 100;
+  static const Duration cacheDuration = Duration(minutes: 30);
 
   void setCache(String key, dynamic value) {
-    if (_cache.length >= MAX_CACHE_SIZE) {
+    if (_cache.length >= maxCacheSize) {
       _cache.remove(_cache.keys.first);
     }
 
@@ -23,7 +23,7 @@ class CacheService {
     if (data == null) return null;
 
     final timestamp = data['timestamp'] as DateTime;
-    if (DateTime.now().difference(timestamp) > CACHE_DURATION) {
+    if (DateTime.now().difference(timestamp) > cacheDuration) {
       _cache.remove(key);
       return null;
     }

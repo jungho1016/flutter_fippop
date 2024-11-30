@@ -1,1 +1,5 @@
-enum SquatPhase { standing, squatting, rising }
+enum SquatPhase {
+  standing,
+  squatting,
+  rising,
+}
